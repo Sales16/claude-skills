@@ -1,0 +1,14 @@
+{
+  "name": "sales16-skills",
+  "description": "Skills pessoais para Claude Code: revisão de branch, atualização de PRs empilhados e entrevistas de design em pt-BR.",
+  "owner": {
+    "name": "Eduardo Sales"
+  },
+  "plugins": [
+    {
+      "name": "sales16-toolkit",
+      "source": "./",
+      "description": "revisar-branch, atualizar-prs, grilling, grill-me, grill-with-docs e domain-modeling."
+    }
+  ]
+}

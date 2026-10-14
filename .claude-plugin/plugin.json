@@ -1,0 +1,9 @@
+{
+  "name": "sales16-toolkit",
+  "description": "revisar-branch, atualizar-prs, grilling, grill-me, grill-with-docs e domain-modeling.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Eduardo Sales"
+  },
+  "license": "MIT"
+}
