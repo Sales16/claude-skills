@@ -1,6 +1,6 @@
 ---
 name: revisar-branch
-description: Revisão profunda da branch atual (ou do PR aberto dela) contra develop/main, usando a issue do Jira do nome da branch como contexto de escopo. Dispara múltiplos agentes em paralelo — bugs, exceções, edge-cases, duplicidade, segurança, performance, manutenibilidade —, verifica red/green de cada teste novo ou alterado, valida criticamente cada achado e propõe um fix por achado. Use quando pedirem "revise essa branch", "revise meu PR", "review antes de abrir PR", ou antes de /finish-issue.
+description: Revisão profunda da branch atual (ou do PR aberto dela) contra a branch-pai real — develop/main ou outra branch de issue da qual ela foi criada, revisando só os commits próprios —, usando a issue do Jira do nome da branch como contexto de escopo. Dispara múltiplos agentes em paralelo — bugs, exceções, edge-cases, duplicidade, segurança, performance, manutenibilidade —, verifica red/green de cada teste novo ou alterado, valida criticamente cada achado e propõe um fix por achado. Use quando pedirem "revise essa branch", "revise meu PR", "review antes de abrir PR", ou antes de /finish-issue.
 ---
 
 # Revisão de branch / PR
@@ -27,15 +27,34 @@ Use a issue para três checagens que só o Jira permite:
 
 ## 2. Escopo do diff
 
-1. Base: `git merge-base HEAD origin/develop` (ou `main` se o repo usar main).
-2. Diff completo: `git diff <base>...HEAD` e `git diff --stat <base>...HEAD`.
+### 2.1 Descobrir a branch-pai
+
+A branch atual pode ter sido criada a partir de outra branch de issue (ex.: `feature/EN-5001` criada de `feature/EN-5000`, que por sua vez sai da `develop`). Nesse caso revise **só os commits da branch atual** — as mudanças da branch-pai pertencem a outra issue e outro PR.
+
+1. `git fetch origin --prune` para ter as refs remotas atualizadas.
+2. **PR aberto manda**: se existir PR, `gh pr view --json baseRefName -q .baseRefName` é a branch-pai. Use-a e pule para o passo 6.
+3. Base padrão: `origin/develop` (ou `origin/main` se o repo não tiver develop). Calcule `MB_DEFAULT=$(git merge-base HEAD origin/develop)`.
+4. Candidatas a pai: toda branch remota de issue (`git for-each-ref --format='%(refname:short)' refs/remotes/origin`, excluindo `HEAD`, a própria branch atual, `develop`, `main`, `master`, `release/*`, `hotfix/*` de versão). Para cada candidata `C`:
+   - `MB_C=$(git merge-base HEAD C)`.
+   - Ela é pai plausível só se `MB_C` for **diferente** de `MB_DEFAULT` e descendente dele: `git merge-base --is-ancestor $MB_DEFAULT $MB_C`.
+   - Distância: `git rev-list --count $MB_C..HEAD` (commits exclusivos da branch atual a partir dessa candidata).
+5. Escolha a candidata com **menor distância**. Sem candidata válida → a branch sai direto da develop/main, base = `origin/develop`. Empate ou dúvida real (duas branches apontando para o mesmo commit) → pergunte ao dev qual é a pai antes de seguir.
+6. Base final do diff: `BASE=$(git merge-base HEAD <branch-pai>)`. Diga na resposta qual branch-pai foi detectada e como (PR ou heurística).
+7. **Pai já mergeada**: se a branch-pai já entrou na develop por merge normal, `git merge-base --is-ancestor origin/<pai> origin/develop` retorna sucesso → use `origin/develop` como base (dá o mesmo diff e é o alvo real do PR). Se entrou por squash, a develop não contém os commits dela: continue usando a branch-pai como base e avise o dev que o PR vai precisar de rebase sobre a develop.
+
+Se a branch-pai for de outra issue (`{tipo}/{OUTRA-KEY}`), leia o título dela no Jira só para saber o que **não** é escopo deste review — não revise o diff dela.
+
+### 2.2 Diff
+
+1. Diff completo: `git diff $BASE...HEAD` e `git diff --stat $BASE...HEAD` — sempre contra o `BASE` da seção 2.1, nunca direto contra a develop quando houver branch-pai.
+2. Confira a sanidade: os commits de `git log --oneline $BASE..HEAD` devem ser todos da issue atual. Commit com a chave da branch-pai na mensagem indica base errada — reavalie a 2.1.
 3. Inclua mudanças não commitadas (`git status`, `git diff`) — fazem parte do PR que vai sair.
-4. Histórico: `git log --oneline <base>..HEAD` — commits `WIP`, revert seguido de reaplicação e "fix review points" indicam pontos frágeis; olhe esses arquivos com mais atenção.
+4. Histórico: `git log --oneline $BASE..HEAD` — commits `WIP`, revert seguido de reaplicação e "fix review points" indicam pontos frágeis; olhe esses arquivos com mais atenção.
 5. PR aberto: `gh pr view` e `gh pr view --comments`. Se houver review anterior, **verifique um por um se os pontos apontados foram realmente resolvidos** — não assuma pelo commit message.
 6. Leia o `CLAUDE.md` da raiz e os aninhados nas pastas tocadas; as regras deles são critério de revisão.
 7. Liste os arquivos por camada (backend, frontend, migrations, testes, configs) — isso define quais agentes valem a pena.
 
-Não revise código fora do diff, exceto para entender o contexto de uma linha alterada (chamadores, contrato, invariantes).
+Não revise código fora do diff, exceto para entender o contexto de uma linha alterada (chamadores, contrato, invariantes). Código vindo da branch-pai conta como fora do diff. Passe aos agentes o comando com o `BASE` resolvido, nunca `origin/develop` genérico.
 
 ## 3. Agentes em paralelo
 
@@ -108,7 +127,7 @@ Junte todos os achados (seus + dos agentes), deduplique por `arquivo:linha` e av
 - Leia o código real ao redor — não confie no resumo do agente.
 - Descreva o cenário concreto de falha: entrada/estado → resultado errado. Se você não conseguir escrever esse cenário, o achado não sobrevive.
 - Verifique se algo antes no fluxo já impede o cenário (validação no controller, `[Required]`, guard, tipo não-nulo, constraint no banco).
-- Verifique se é pré-existente ao diff. Se é, marque como pré-existente e rebaixe a prioridade — não é bloqueio deste PR.
+- Verifique se é pré-existente ao diff. Se é, marque como pré-existente e rebaixe a prioridade — não é bloqueio deste PR. Problema introduzido pela branch-pai também é pré-existente aqui: cite como "vem de `<branch-pai>`", sem bloquear.
 - Confronte com a issue: o "problema" pode ser comportamento pedido explicitamente no card ou nos comentários.
 - Descarte nit de formatação e preferência de estilo que não muda comportamento nem leitura.
 
@@ -117,7 +136,7 @@ Achados sobreviventes ganham severidade: **crítico** (bug, falha de segurança,
 ## 7. Formato da resposta
 
 ```markdown
-## Revisão — <branch> (<N> arquivos, base <base>)
+## Revisão — <branch> (<N> arquivos, base <branch-pai> — detectada via PR/heurística)
 
 **Issue <KEY>**: <título> — <uma linha sobre o que o card pede>
 
