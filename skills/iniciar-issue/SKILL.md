@@ -27,9 +27,8 @@ Leia pelo MCP Atlassian (`getJiraIssue`, cloudId `lacuna.atlassian.net`):
 1. **Issue**: título, tipo (bug/feature/refactor), status, descrição, critérios de aceite.
 2. **Comentários**: costumam conter a regra de negócio real, exceções combinadas e mudanças de escopo que não estão na descrição.
 3. **Subtasks e issues relacionadas**: mostram dependências e o que **não** é escopo desta issue.
-4. **Epic pai**: contexto do objetivo maior.
-5. **Páginas do Confluence linkadas** na issue ou nos comentários (`getConfluenceContent`): leia quando a issue apontar para uma spec.
-6. Se for **bug**: extraia o passo-a-passo de reprodução. Ele vira roteiro de teste.
+4. **Páginas do Confluence linkadas** na issue ou nos comentários (`getConfluenceContent`): leia quando a issue apontar para uma spec.
+5. Se for **bug**: extraia o passo-a-passo de reprodução. Ele vira roteiro de teste.
 
 Se o MCP falhar ou a issue não existir, pare e avise. Não planeje sem a issue.
 
