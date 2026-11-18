@@ -7,6 +7,15 @@ description: Revisão profunda da branch atual (ou do PR aberto dela) contra a b
 
 Objetivo: entregar uma lista curta de problemas **reais**, cada um com localização exata (`arquivo:linha`), severidade e um fix concreto. Falsos positivos custam mais que achados perdidos — todo achado passa por validação antes de aparecer na resposta.
 
+## Regras invioláveis do working tree
+
+O dev pode rodar esta revisão **antes de commitar**. As mudanças não commitadas (staged, unstaged e arquivos novos não rastreados) fazem parte da revisão em **todas** as etapas e **nunca** podem ser alteradas.
+
+- **No working tree principal só se lê.** Ninguém — main loop ou agente — faz ali `Edit`/`Write`, `git stash`, `git checkout`/`switch`/`restore`/`reset`/`clean`/`commit`/`add`, formatter, build ou teste (build/teste escrevem em `bin/`/`obj/` e podem disparar hooks).
+- **Tudo que modifica algo roda num worktree separado** criado a partir do estado atual, incluindo as mudanças não commitadas (seção 2.3). Hoje isso é o agente de testes da seção 4; qualquer outra etapa que precise buildar, rodar ou mutar código segue a mesma regra.
+- Agentes que só leem (revisores da seção 3) ficam no working tree principal e recebem no prompt a instrução explícita: "somente leitura — não edite arquivos, não rode build/teste, não rode comando git que altere working tree, index ou branch".
+- Comandos permitidos no principal: `git fetch`, `git diff`, `git log`, `git status`, `git show`, `git merge-base`, `git rev-list`, `git for-each-ref`, `git ls-files`, `git worktree add/remove` (só mexem em refs/metadados, não nos arquivos do dev), `gh pr view`, leitura e busca de arquivos.
+
 **Responda sempre em português (pt-BR).** Termos técnicos, nomes de API, código e mensagens de erro ficam no original.
 
 ## 1. Contexto: issue do Jira
@@ -46,19 +55,29 @@ Se a branch-pai for de outra issue (`{tipo}/{OUTRA-KEY}`), leia o título dela n
 
 ### 2.2 Diff
 
-1. Diff completo: `git diff $BASE...HEAD` e `git diff --stat $BASE...HEAD` — sempre contra o `BASE` da seção 2.1, nunca direto contra a develop quando houver branch-pai.
-2. Confira a sanidade: os commits de `git log --oneline $BASE..HEAD` devem ser todos da issue atual. Commit com a chave da branch-pai na mensagem indica base errada — reavalie a 2.1.
-3. Inclua mudanças não commitadas (`git status`, `git diff`) — fazem parte do PR que vai sair.
+1. Diff completo **incluindo as mudanças não commitadas**: `git diff $BASE` e `git diff --stat $BASE` (sem `...HEAD` — assim compara o `BASE` com o working tree, pegando staged e unstaged). Sempre contra o `BASE` da seção 2.1, nunca direto contra a develop quando houver branch-pai.
+2. Arquivos novos não rastreados não aparecem no `git diff`: liste com `git ls-files --others --exclude-standard` e trate cada um como arquivo inteiro adicionado.
+3. Confira a sanidade: os commits de `git log --oneline $BASE..HEAD` devem ser todos da issue atual. Commit com a chave da branch-pai na mensagem indica base errada — reavalie a 2.1. Diga na resposta se a revisão incluiu mudanças não commitadas e quantos arquivos.
 4. Histórico: `git log --oneline $BASE..HEAD` — commits `WIP`, revert seguido de reaplicação e "fix review points" indicam pontos frágeis; olhe esses arquivos com mais atenção.
 5. PR aberto: `gh pr view` e `gh pr view --comments`. Se houver review anterior, **verifique um por um se os pontos apontados foram realmente resolvidos** — não assuma pelo commit message.
 6. Leia o `CLAUDE.md` da raiz e os aninhados nas pastas tocadas; as regras deles são critério de revisão.
 7. Liste os arquivos por camada (backend, frontend, migrations, testes, configs) — isso define quais agentes valem a pena.
 
-Não revise código fora do diff, exceto para entender o contexto de uma linha alterada (chamadores, contrato, invariantes). Código vindo da branch-pai conta como fora do diff. Passe aos agentes o comando com o `BASE` resolvido, nunca `origin/develop` genérico.
+Não revise código fora do diff, exceto para entender o contexto de uma linha alterada (chamadores, contrato, invariantes). Código vindo da branch-pai conta como fora do diff. Passe aos agentes o comando `git diff $BASE` com o `BASE` resolvido (nunca `origin/develop` genérico, nunca `$BASE...HEAD`) mais a lista de arquivos não rastreados.
+
+### 2.3 Worktree isolado para os testes
+
+Se o diff tiver teste novo ou alterado (ou qualquer etapa precisar buildar, rodar ou mutar código), prepare logo aqui uma cópia isolada do estado atual, **com** as mudanças não commitadas. A etapa red da seção 4 muta código de produção e builda; fazer isso no working tree principal faria os agentes de revisão lerem código mutado e disputarem `bin/`/`obj/` com o build.
+
+1. `WT="$(mktemp -d)/rb-tests"` e `git worktree add --detach "$WT" HEAD`.
+2. Mudanças não commitadas vão junto: `git diff HEAD --binary > "$WT.patch"` e `git -C "$WT" apply "$WT.patch"` (pule se vazio). Copie também os arquivos não rastreados de `git ls-files --others --exclude-standard` para o mesmo caminho relativo dentro de `$WT`.
+3. Confira que `git -C "$WT" diff --stat` bate com `git diff HEAD --stat` do tree principal.
+
+O worktree é usado **só** pelo agente de testes. Todo o resto da revisão continua no working tree principal.
 
 ## 3. Agentes em paralelo
 
-Dispare os agentes aplicáveis **numa única mensagem** para rodarem concorrentes. Cada um recebe: resumo da issue do Jira, lista de arquivos alterados, o comando de diff que deve rodar e a instrução de retornar achados como `arquivo:linha — severidade — problema — fix sugerido`, sem elogios e sem sugestões fora do diff.
+Dispare os agentes aplicáveis **numa única mensagem** para rodarem concorrentes. **Na mesma mensagem**, dispare o agente de testes da seção 4 em background — ele é o mais lento e deve começar primeiro, rodando enquanto os revisores trabalham. Cada revisor recebe: resumo da issue do Jira, lista de arquivos alterados (incluindo não rastreados), o comando `git diff $BASE` que deve rodar, a instrução de **somente leitura** das regras invioláveis e a instrução de retornar achados como `arquivo:linha — severidade — problema — fix sugerido`, sem elogios e sem sugestões fora do diff.
 
 **Custo por complexidade**: nem todo achado exige o modelo mais caro. Regra de bolso ao chamar `Agent`:
 
@@ -94,21 +113,25 @@ Ajuste por camada:
 
 Se o diff tocar apenas 1–2 arquivos triviais, corte a lista de agentes — não gaste enxame em mudança mecânica; diga isso e revise inline.
 
-## 4. Verificação red/green dos testes
+## 4. Verificação red/green dos testes (agente em background)
 
-Para **cada** teste novo ou alterado no diff, um por vez (não em lote):
+Executada por um agente `general-purpose` (`model: "sonnet"`) disparado na mesma mensagem dos revisores da seção 3, trabalhando **exclusivamente** dentro de `$WT` (seção 2.3) — nunca no working tree principal. Passe ao agente: o caminho absoluto de `$WT`, o `BASE`, a lista de testes novos/alterados com os arquivos de produção que cada um protege, e as instruções abaixo. Ele retorna a tabela por teste descrita no fim desta seção.
 
-1. **Green**: rode o teste isolado (filtro pelo nome, não a suíte toda) e confirme que passa.
-2. **Red**: quebre deliberadamente o código de produção que o teste deveria proteger — inverta a condição, remova a validação, retorne o valor errado — e confirme que **esse** teste falha, na asserção certa.
-3. **Restaure** o código imediatamente e rode o teste de novo para confirmar green.
+Comandos abaixo são .NET; em outra stack use o equivalente (build uma vez, rodar testes sem rebuild, filtro por nome).
 
-Antes de começar: garanta que a árvore está limpa ou que as mudanças estão salvas, para que a restauração seja verificável (`git diff` volta ao estado inicial ao final). Nunca deixe a etapa red aplicada; se qualquer restauração falhar, pare e avise em vez de continuar.
+1. **Build uma vez**: `dotnet restore` e `dotnet build --no-restore` na solução dentro de `$WT`. Depois disso, nunca mais restore nem build da solução inteira.
+2. **Green em lote**: uma única execução com todos os testes novos/alterados — `dotnet test <proj-teste> --no-build --filter "FullyQualifiedName~TesteA|FullyQualifiedName~TesteB"`. Registre quais passaram. Teste que falha no green não segue para o red; é achado.
+3. **Red, um teste por vez**: para cada teste que passou green:
+   - Quebre deliberadamente o código de produção que ele deveria proteger — inverta a condição, remova a validação, retorne o valor errado.
+   - Build incremental só do necessário: `dotnet build <proj-teste> --no-restore` (recompila o projeto de produção alterado e o de teste, nada mais).
+   - `dotnet test <proj-teste> --no-build --filter "FullyQualifiedName~<Teste>"` e confirme que **esse** teste falha, na asserção certa.
+   - **Restaure** com `git -C "$WT" checkout -- <arquivo>` e confirme que `git -C "$WT" diff --stat` voltou ao estado inicial do worktree. Não rode o green de novo por teste — a confirmação vem do passo 4.
+   - Se qualquer restauração falhar, pare e reporte em vez de continuar.
+4. **Fechamento**: `dotnet build --no-restore` e `dotnet test --no-build` da suíte completa uma vez — confirma que tudo voltou a green e pega quebra colateral. Se não houver como rodar no ambiente, diga isso explicitamente em vez de assumir que passam.
 
-Registre por teste: passou green? falhou red? A falha red apontou a asserção esperada? Teste que passa green mas **não** falha no red é achado de severidade alta — não testa nada.
+Retorno do agente, por teste: passou green? falhou red? A falha red apontou a asserção esperada? Mais o resultado da suíte completa e do build. Teste que passa green mas **não** falha no red é achado de severidade alta — não testa nada.
 
-Depois dos testes individuais, rode a suíte completa e o build uma vez para pegar quebra colateral. Se não houver como rodar no ambiente, diga isso explicitamente em vez de assumir que passam.
-
-Cobertura vs. Jira: cada critério de aceite e cada passo de reprodução do bug deveria ter um teste. Aponte os que não têm.
+Cobertura vs. Jira (feito pelo main loop, não pelo agente): cada critério de aceite e cada passo de reprodução do bug deveria ter um teste. Aponte os que não têm.
 
 ## 5. Higiene do diff
 
@@ -121,6 +144,8 @@ Checagem mecânica rápida, direto no diff:
 - Mudança de formatação misturada com mudança de lógica no mesmo arquivo, dificultando a revisão.
 
 ## 6. Validação crítica antes de responder
+
+Espere a notificação do agente de testes da seção 4 antes de fechar a validação. Com o resultado em mãos, remova o worktree: `git worktree remove --force "$WT"` e apague `$WT.patch`. Se o agente reportou restauração falha, remova o worktree mesmo assim — o tree principal não foi tocado — e cite a falha na resposta.
 
 Junte todos os achados (seus + dos agentes), deduplique por `arquivo:linha` e avalie **cada um separadamente**:
 
