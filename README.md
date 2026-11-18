@@ -7,6 +7,7 @@ Skills para o [Claude Code](https://claude.com/claude-code), escritas para respo
 | Skill | Como chamar | O que faz |
 |---|---|---|
 | `revisar-branch` | `/revisar-branch` ou "revise essa branch" | Revisão profunda da branch atual ou do PR dela. Detecta a branch-pai real (develop/main ou outra branch de issue) e revisa só os commits próprios. Usa a issue do Jira do nome da branch como escopo, dispara agentes em paralelo (bugs, edge-cases, segurança, performance etc.), faz red/green de cada teste alterado e valida cada achado antes de reportar. |
+| `iniciar-issue` | `/iniciar-issue [ISSUE-KEY]` ou "inicia a issue" | Começa uma issue: lê o Jira da branch (ou da chave passada), incluindo comentários, subtasks e Confluence linkado. Analisa o código com agentes, tira as dúvidas com o `grilling` e mostra o plano no chat. Só implementa depois da aprovação, sugerindo `orchestrated-work` quando o escopo é grande. Compila e testa, mas não commita. |
 | `atualizar-prs` | `/atualizar-prs` ou "atualiza os PRs em cadeia" | Atualiza uma pilha de PRs empilhados (`develop -> PR1 -> PR2 -> PR3`), uma branch por vez a partir da mais próxima da develop. Em cada branch: remove a migration EF própria, mergeia a anterior, resolve conflitos, recria a migration com o custom code, compara antiga x nova, compila e testa. Só commita local, nunca dá push sem ordem explícita e nunca dá force push. |
 | `grilling` | "me grelha nesse plano" ou qualquer gatilho "grill" | Entrevista implacável sobre um plano ou decisão, uma pergunta por vez, sempre pelo `AskUserQuestion`, com a resposta recomendada em primeiro. |
 | `grill-me` | `/grill-me` | Atalho manual para o `grilling`. |
@@ -15,7 +16,7 @@ Skills para o [Claude Code](https://claude.com/claude-code), escritas para respo
 
 As skills `grilling`, `grill-me`, `grill-with-docs` e `domain-modeling` são versões adaptadas das skills de [mattpocock/skills](https://github.com/mattpocock/skills). As mudanças são: idioma pt-BR e perguntas sempre pelo `AskUserQuestion`.
 
-`revisar-branch` e `atualizar-prs` assumem o padrão: branch `{tipo}/{ISSUE-KEY}`, `gh` autenticado e, no caso do `atualizar-prs`, projeto .NET com EF Core.
+`revisar-branch`, `atualizar-prs` e `iniciar-issue` assumem o padrão: branch `{tipo}/{ISSUE-KEY}`, `gh` autenticado e, no caso do `atualizar-prs`, projeto .NET com EF Core.
 
 ## Instalação
 
