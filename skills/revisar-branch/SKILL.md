@@ -12,9 +12,9 @@ Objetivo: entregar uma lista curta de problemas **reais**, cada um com localiza�
 O dev pode rodar esta revisão **antes de commitar**. As mudanças não commitadas (staged, unstaged e arquivos novos não rastreados) fazem parte da revisão em **todas** as etapas e **nunca** podem ser alteradas.
 
 - **No working tree principal só se lê.** Ninguém — main loop ou agente — faz ali `Edit`/`Write`, `git stash`, `git checkout`/`switch`/`restore`/`reset`/`clean`/`commit`/`add`, formatter, build ou teste (build/teste escrevem em `bin/`/`obj/` e podem disparar hooks).
-- **Tudo que modifica algo roda num worktree separado** criado a partir do estado atual, incluindo as mudanças não commitadas (seção 2.3). Hoje isso é o agente de testes da seção 4; qualquer outra etapa que precise buildar, rodar ou mutar código segue a mesma regra.
+- **Tudo que modifica algo roda num worktree separado** criado a partir do estado atual, incluindo as mudanças não commitadas (seção 2.3). Hoje isso é o script de testes da seção 4; qualquer outra etapa que precise buildar, rodar ou mutar código segue a mesma regra.
 - Agentes que só leem (revisores da seção 3) ficam no working tree principal e recebem no prompt a instrução explícita: "somente leitura — não edite arquivos, não rode build/teste, não rode comando git que altere working tree, index ou branch".
-- Comandos permitidos no principal: `git fetch`, `git diff`, `git log`, `git status`, `git show`, `git merge-base`, `git rev-list`, `git for-each-ref`, `git ls-files`, `git worktree add/remove` (só mexem em refs/metadados, não nos arquivos do dev), `gh pr view`, leitura e busca de arquivos.
+- Comandos permitidos no principal: `git fetch`, `git diff`, `git log`, `git status`, `git show`, `git merge-base`, `git rev-list`, `git for-each-ref`, `git ls-files`, `git worktree add/remove`, e `git read-tree`/`git add -A`/`git write-tree` **somente com `GIT_INDEX_FILE` apontando para um índice temporário** mais `git commit-tree` (seção 2.3 — só gravam objetos e metadados, não tocam arquivos nem o index do dev), `gh pr view`, leitura e busca de arquivos.
 
 **Responda sempre em português (pt-BR).** Termos técnicos, nomes de API, código e mensagens de erro ficam no original.
 
@@ -67,17 +67,32 @@ Não revise código fora do diff, exceto para entender o contexto de uma linha a
 
 ### 2.3 Worktree isolado para os testes
 
-Se o diff tiver teste novo ou alterado (ou qualquer etapa precisar buildar, rodar ou mutar código), prepare logo aqui uma cópia isolada do estado atual, **com** as mudanças não commitadas. A etapa red da seção 4 muta código de produção e builda; fazer isso no working tree principal faria os agentes de revisão lerem código mutado e disputarem `bin/`/`obj/` com o build.
+Sempre que o repo tiver solução buildável, prepare logo aqui uma cópia isolada do estado atual, **com** as mudanças não commitadas. A seção 4 builda, roda testes e, quando há teste novo, muta código de produção; fazer isso no working tree principal faria os agentes de revisão lerem código mutado e disputarem `bin/`/`obj/` com o build.
 
-1. `WT="$(mktemp -d)/rb-tests"` e `git worktree add --detach "$WT" HEAD`.
-2. Mudanças não commitadas vão junto: `git diff HEAD --binary > "$WT.patch"` e `git -C "$WT" apply "$WT.patch"` (pule se vazio). Copie também os arquivos não rastreados de `git ls-files --others --exclude-standard` para o mesmo caminho relativo dentro de `$WT`.
-3. Confira que `git -C "$WT" diff --stat` bate com `git diff HEAD --stat` do tree principal.
+A cópia é um commit sintético montado com um índice temporário — pega staged, unstaged, não rastreados, binários, renames e deleções sem tocar no working tree nem no index do dev. Rode tudo numa **única** chamada `Bash` (o `GIT_INDEX_FILE` não pode vazar para outras chamadas):
 
-O worktree é usado **só** pelo agente de testes. Todo o resto da revisão continua no working tree principal.
+```bash
+RB="$(mktemp -d)"
+command -v cygpath > /dev/null && RB="$(cygpath -m "$RB")"
+touch "$RB/.revisar-branch" && mkdir -p "$RB/mut" &&
+GIT_INDEX_FILE="$RB/idx" git read-tree HEAD &&
+GIT_INDEX_FILE="$RB/idx" git add -A &&
+T="$(GIT_INDEX_FILE="$RB/idx" git write-tree)" &&
+C="$(git commit-tree "$T" -p HEAD -m revisar-branch)" &&
+git worktree add --detach "$RB/wt" "$C" &&
+{ [ ! -f "$RB/wt/.gitmodules" ] || git -C "$RB/wt" submodule update --init --recursive; } &&
+git -C "$RB/wt" status --porcelain && echo "RB=$RB"
+```
+
+1. Anote o `RB` impresso: ele é absoluto e, no Windows, sai no formato `C:/...` (via `cygpath -m`), que serve igual para Bash, git, dotnet e para as ferramentas `Read`/`Write`/`Edit`. Use **sempre** os caminhos literais `<RB>/wt` (o worktree, `WT`) e `<RB>/mut` (`MUT`) — variáveis de shell não persistem entre chamadas.
+2. `git status --porcelain` do worktree deve sair vazio. Se não sair, ou qualquer comando falhar, pare a seção 4 e diga na resposta que o red/green não foi verificado.
+3. **Dispare o script de testes já aqui**, antes dos revisores — o restore/build frio é a etapa mais lenta e deve começar o quanto antes (seção 4.1).
+
+O worktree é usado **só** pelo script de testes. Todo o resto da revisão continua no working tree principal.
 
 ## 3. Agentes em paralelo
 
-Dispare os agentes aplicáveis **numa única mensagem** para rodarem concorrentes. **Na mesma mensagem**, dispare o agente de testes da seção 4 em background — ele é o mais lento e deve começar primeiro, rodando enquanto os revisores trabalham. Cada revisor recebe: resumo da issue do Jira, lista de arquivos alterados (incluindo não rastreados), o comando `git diff $BASE` que deve rodar, a instrução de **somente leitura** das regras invioláveis e a instrução de retornar achados como `arquivo:linha — severidade — problema — fix sugerido`, sem elogios e sem sugestões fora do diff.
+Dispare os agentes aplicáveis **numa única mensagem** para rodarem concorrentes, enquanto o script de testes da seção 4 já roda em background. Cada revisor recebe: resumo da issue do Jira, lista de arquivos alterados (incluindo não rastreados), o comando `git diff $BASE` que deve rodar, a instrução de **somente leitura** das regras invioláveis e a instrução de retornar achados como `arquivo:linha — severidade — problema — fix sugerido`, sem elogios e sem sugestões fora do diff.
 
 **Custo por complexidade**: nem todo achado exige o modelo mais caro. Regra de bolso ao chamar `Agent`:
 
@@ -113,25 +128,63 @@ Ajuste por camada:
 
 Se o diff tocar apenas 1–2 arquivos triviais, corte a lista de agentes — não gaste enxame em mudança mecânica; diga isso e revise inline.
 
-## 4. Verificação red/green dos testes (agente em background)
+## 4. Verificação red/green dos testes (script em background)
 
-Executada por um agente `general-purpose` (`model: "sonnet"`) disparado na mesma mensagem dos revisores da seção 3, trabalhando **exclusivamente** dentro de `$WT` (seção 2.3) — nunca no working tree principal. Passe ao agente: o caminho absoluto de `$WT`, o `BASE`, a lista de testes novos/alterados com os arquivos de produção que cada um protege, e as instruções abaixo. Ele retorna a tabela por teste descrita no fim desta seção.
+Sem agente: o main loop prepara as mutações e um único script, `scripts/red-green.sh` (na pasta desta skill), roda tudo em sequência dentro de `<RB>/wt`, sem volta de LLM entre os passos. O tempo de build/teste é o mesmo; some o overhead de raciocínio e de tool call por passo. O script é .NET; em outra stack, faça uma cópia com os comandos equivalentes (build uma vez, testes sem rebuild, filtro por nome).
 
-Comandos abaixo são .NET; em outra stack use o equivalente (build uma vez, rodar testes sem rebuild, filtro por nome).
+O script recusa rodar se `WT`/`MUT` vierem vazios ou relativos, se `WT` não estiver num diretório com o marcador `.revisar-branch` da seção 2.3, ou se `WT` for o worktree principal (sai com código 90). **Nunca** rode `cp`, `dotnet build` ou `dotnet test` à mão para o red/green — sempre pelo script. Todo `dotnet test` roda com timeout de 600 s (`RB_TEST_TIMEOUT` muda), para uma mutação que gere loop infinito não travar a revisão.
 
-1. **Build uma vez**: `dotnet restore` e `dotnet build --no-restore` na solução dentro de `$WT`. Depois disso, nunca mais restore nem build da solução inteira.
-2. **Green em lote**: uma única execução com todos os testes novos/alterados — `dotnet test <proj-teste> --no-build --filter "FullyQualifiedName~TesteA|FullyQualifiedName~TesteB"`. Registre quais passaram. Teste que falha no green não segue para o red; é achado.
-3. **Red, um teste por vez**: para cada teste que passou green:
-   - Quebre deliberadamente o código de produção que ele deveria proteger — inverta a condição, remova a validação, retorne o valor errado.
-   - Build incremental só do necessário: `dotnet build <proj-teste> --no-restore` (recompila o projeto de produção alterado e o de teste, nada mais).
-   - `dotnet test <proj-teste> --no-build --filter "FullyQualifiedName~<Teste>"` e confirme que **esse** teste falha, na asserção certa.
-   - **Restaure** com `git -C "$WT" checkout -- <arquivo>` e confirme que `git -C "$WT" diff --stat` voltou ao estado inicial do worktree. Não rode o green de novo por teste — a confirmação vem do passo 4.
-   - Se qualquer restauração falhar, pare e reporte em vez de continuar.
-4. **Fechamento**: `dotnet build --no-restore` e `dotnet test --no-build` da suíte completa uma vez — confirma que tudo voltou a green e pega quebra colateral. Se não houver como rodar no ambiente, diga isso explicitamente em vez de assumir que passam.
+### 4.1 Disparo (ainda na seção 2.3)
 
-Retorno do agente, por teste: passou green? falhou red? A falha red apontou a asserção esperada? Mais o resultado da suíte completa e do build. Teste que passa green mas **não** falha no red é achado de severidade alta — não testa nada.
+**Sem teste novo ou alterado no diff**: não há red/green a fazer — basta garantir que as alterações não quebraram nada. Dispare só a suíte completa, com `Bash` e `run_in_background: true`, e pule a 4.2:
 
-Cobertura vs. Jira (feito pelo main loop, não pelo agente): cada critério de aceite e cada passo de reprodução do bug deveria ter um teste. Aponte os que não têm.
+```bash
+bash "<pasta-da-skill>/scripts/red-green.sh" suite "<RB>/wt" "<RB>/mut" "<solução relativa ao WT>"
+```
+
+O modo `suite` roda `dotnet restore`, `dotnet build --no-restore` e `dotnet test --no-build` da solução inteira e grava `restore`/`build`/`final-test` no `status`. Na 4.3 valem só as linhas desses três.
+
+**Com teste novo ou alterado**: monte o filtro de todos os testes novos/alterados (`FullyQualifiedName~TesteA|FullyQualifiedName~TesteB`) e dispare com `Bash` e `run_in_background: true`, usando os caminhos literais:
+
+```bash
+bash "<pasta-da-skill>/scripts/red-green.sh" run "<RB>/wt" "<RB>/mut" "<solução relativa ao WT>" "<filtro green>"
+```
+
+O script faz, sem esperar ninguém: `dotnet restore` e `dotnet build --no-restore` da solução uma vez, e o green em lote com `dotnet test --no-build --filter`. Se restore ou build falharem, ele grava `mutations=skipped` e termina sem tentar mutação nenhuma. Senão, fica aguardando o arquivo `<RB>/mut/READY` (timeout de 30 min, `RB_READY_TIMEOUT` muda) para começar as mutações.
+
+### 4.2 Mutações (main loop, enquanto o script e os revisores rodam)
+
+Para cada teste novo ou alterado, uma mutação, em **um único arquivo** de produção:
+
+1. Leia o teste e o código de produção que ele protege no working tree principal (só leitura).
+2. Escolha uma quebra que **esse** teste deveria pegar e que **compile**: inverter a condição, remover a validação, retornar o valor errado. Mutação que não compila não serve.
+3. Copie o arquivo original do worktree: `cp "<RB>/wt/<caminho>" "<RB>/mut/<id>.file"`. Depois faça `Read` + `Edit` **só no trecho mutado** de `<RB>/mut/<id>.file`. Nunca reescreva o arquivo inteiro com `Write` (perde BOM/CRLF e altera linhas fora da mutação), nunca edite no working tree principal nem no `<RB>/wt` (o script está buildando lá).
+4. Adicione a linha do manifesto via `Bash`, com TAB garantido e sem BOM — nunca com `Write`:
+   ```bash
+   printf '%s\t%s\t%s\t%s\n' "<id>" "<projeto de teste relativo ao WT>" "<filtro do teste>" "<arquivo de produção relativo ao WT>" >> "<RB>/mut/manifest.tsv"
+   ```
+   Use `<id>` curto e único (`m01`, `m02`...). Nenhum campo pode ficar vazio.
+
+Ao terminar todas, crie `<RB>/mut/READY` com `touch` (mesmo sem nenhuma mutação, para o script não ficar esperando o timeout). Depois do `READY`, não mexa em mais nada dentro de `<RB>/mut`.
+
+Para cada linha do manifesto, o script: salva o original, copia o mutado por cima, confere que o conteúdo mudou, roda `dotnet build <proj> --no-restore` (incremental), roda `dotnet test <proj> --no-build --filter <filtro>` só se o build passou, restaura o original e confere que o arquivo e o `git diff HEAD` do worktree voltaram ao estado de antes da mutação. Restauração falha aborta o script (código 92). No fim roda build e suíte completa uma vez.
+
+### 4.3 Leitura do resultado (seção 6)
+
+O harness avisa quando o script termina. Leia `<RB>/mut/log/status` e, conforme a linha, o log correspondente. Primeiro confira que **todo** `<id>` do `manifest.tsv` tem uma linha no `status` — id sem linha foi perdido; trate como "red não verificado".
+
+- `restore`/`build` ≠ 0 com `mutations=skipped` → leia o `.txt` da etapa. Build quebrado no estado do dev é achado crítico. Nenhum red foi tentado; não refaça mutações.
+- `green` ≠ 0 ou `green=timeout` → leia `green.txt`. Teste que falha no green é achado, e o red dele não vale. Mesmo com `green=0`, confirme que **cada** teste do filtro aparece como executado e aprovado — filtro que não casou com nenhum teste também pode sair com código 0.
+- `<id> build≠0 test=skip` → **mutação inválida** (não compilou), não é red OK. Refaça uma vez: recopie o original para `<RB>/mut/<id>.file`, aplique outra mutação com `Edit` e rode `bash "<pasta-da-skill>/scripts/red-green.sh" one "<RB>/wt" "<RB>/mut" <id>` (resultado sai como `<id>.retry` no `status`). Se falhar de novo, reporte como "red não verificado".
+- `<id> mut=NOOP` → o arquivo mutado ficou igual ao original; refaça a mutação e rode o modo `one`, como acima.
+- `<id> build=0 test≠0` → abra `<id>.test.txt` e confirme que falhou **esse** teste, na asserção esperada. Falha por exceção não relacionada ou outro teste não conta como red OK.
+- `<id> build=0 test=timeout` → abra `<id>.test.txt`. Só é red OK se o log mostrar que o teste certo travou por causa da mutação; senão, "red não verificado".
+- `<id> build=0 test=0` → abra `<id>.test.txt`: se o teste rodou e passou, ele **não testa nada** — achado de severidade alta. Se o filtro não casou com nenhum teste, corrija o filtro na linha do manifesto (reescreva o arquivo via `printf`) e rode o modo `one`.
+- `<id> setup=FAIL` → campo vazio, arquivo mutado, de produção ou projeto não encontrado, ou `cp` falhou; corrija e rode o modo `one`.
+- `<id> restore=FAIL`, `ready=timeout`, código 90 ou ausência de `done` → o script parou no meio; diga isso na resposta e não assuma resultado para os testes restantes.
+- `final-build`/`final-test` ≠ 0 → quebra colateral; leia o log. Se não houver como rodar no ambiente, diga isso explicitamente em vez de assumir que passam.
+
+Cobertura vs. Jira: cada critério de aceite e cada passo de reprodução do bug deveria ter um teste. Aponte os que não têm.
 
 ## 5. Higiene do diff
 
@@ -145,7 +198,7 @@ Checagem mecânica rápida, direto no diff:
 
 ## 6. Validação crítica antes de responder
 
-Espere a notificação do agente de testes da seção 4 antes de fechar a validação. Com o resultado em mãos, remova o worktree: `git worktree remove --force "$WT"` e apague `$WT.patch`. Se o agente reportou restauração falha, remova o worktree mesmo assim — o tree principal não foi tocado — e cite a falha na resposta.
+Se a seção 4 rodou, espere a notificação de término do script e interprete o resultado conforme a 4.3 antes de fechar a validação. Depois, remova tudo: `git worktree remove --force "<RB>/wt"` e `rm -rf "<RB>"`. Se o script abortou ou a restauração falhou, remova mesmo assim — o tree principal não foi tocado — e cite a falha na resposta.
 
 Junte todos os achados (seus + dos agentes), deduplique por `arquivo:linha` e avalie **cada um separadamente**:
 
@@ -174,6 +227,7 @@ Achados sobreviventes ganham severidade: **crítico** (bug, falha de segurança,
 - <NomeDoTeste> — green OK / red OK
 - <NomeDoTeste> — green OK / **red FALHOU: passa mesmo com o código quebrado**
 - Suíte completa: <resultado> · Build: <resultado>
+- (sem teste novo/alterado no diff: "Nenhum teste novo — só a suíte completa rodou" e a linha de Suíte/Build acima)
 
 ### Críticos (N)
 1. `arquivo.cs:42` — <problema em uma frase>
